@@ -1,0 +1,21 @@
+# Terraform
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# 認証情報
+.env
+*.pem
+*.key
+
+# Lambda ZIP（自動生成）
+.terraform/
+**/*.zip
