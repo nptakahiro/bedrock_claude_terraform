@@ -13,10 +13,8 @@
 4. [機能フラグ一覧](#機能フラグ一覧)
 5. [コスト試算](#コスト試算)
 6. [API 使用例](#api-使用例)
-7. [機能リファレンスマップ](#機能リファレンスマップ)
-8. [各リソースの学習ポイント](#各リソースの学習ポイント)
-9. [よくある問題と対処法](#よくある問題と対処法)
-10. [本番化チェックリスト](#本番化チェックリスト)
+7. [よくある問題と対処法](#よくある問題と対処法)
+8. [本番化チェックリスト](#本番化チェックリスト)
 
 ---
 
@@ -86,28 +84,22 @@ flowchart TD
 
 ```
 bedrock_demo/
-├── main.tf                    # プロバイダー設定・Terraform バージョン固定
-├── variables.tf               # 全変数定義（コメント付き）
-├── locals.tf                  # 命名プレフィックス・共通タグ
-├── outputs.tf                 # apply 後に表示される API URL 等
+├── main.tf          # モジュール呼び出し・プロバイダー設定
+├── variables.tf     # 全変数定義
+├── locals.tf        # 命名プレフィックス・共通タグ
+├── outputs.tf       # apply 後に表示される API URL 等
 │
-├── s3.tf                      # ドキュメントバケット + ログバケット
-├── dynamodb.tf                # 会話履歴テーブル（TTL・暗号化）
-├── iam.tf                     # IAM ロール/ポリシー（最小権限）
-├── lambda.tf                  # Lambda 関数定義 + ロググループ
-├── api_gateway.tf             # REST API（/chat, /rag）+ CORS
-│
-├── bedrock_guardrails.tf      # コンテンツフィルタ・PII・トピック拒否
-├── bedrock_knowledge_base.tf  # RAG ナレッジベース（デフォルト無効）
-├── bedrock_agent.tf           # エージェント + Action Group + Alias
-├── cloudwatch.tf              # モデル呼び出しログ・ダッシュボード・アラーム
-│
-└── lambda/
-    ├── chat/
-    │   └── handler.py         # InvokeModel + 会話履歴管理
-    └── rag/
-        └── handler.py         # RetrieveAndGenerate / Retrieve
+└── modules/
+    ├── storage/         # S3（ドキュメント/ログ）+ DynamoDB
+    ├── bedrock/         # Guardrails / Knowledge Base / Agent + IAM
+    ├── compute/         # Lambda + API Gateway + IAM
+    │   └── lambda/
+    │       ├── chat/handler.py   # InvokeModel + 会話履歴管理
+    │       └── rag/handler.py    # RetrieveAndGenerate / Retrieve
+    └── observability/   # CloudWatch ログ・ダッシュボード・アラーム
 ```
+
+各モジュールの詳細は `modules/<name>/README.md` を参照してください。
 
 ---
 
@@ -296,193 +288,6 @@ aws dynamodb query \
   --table-name bedrock-demo-dev-conversations \
   --key-condition-expression "session_id = :sid" \
   --expression-attribute-values '{":sid": {"S": "my-session-123"}}'
-```
-
----
-
-## 機能リファレンスマップ
-
-### AI/ML 基礎概念
-
-| 概念 | 実装場所 | ポイント |
-|---|---|---|
-| 基盤モデル (FM) | `variables.tf` | InvokeModel でどのモデルも同一 API で呼べる |
-| トークン化 | `lambda/chat/handler.py` | `max_tokens` = 出力の上限（入力は別途カウント） |
-| 埋め込み (Embeddings) | `bedrock_knowledge_base.tf` | Titan Embeddings V2 = 1536次元ベクトル |
-| ベクトル類似検索 | `bedrock_knowledge_base.tf` | コサイン類似度で意味的に近いチャンクを検索 |
-| コンテキストウィンドウ | `lambda/chat/handler.py` | `_get_history(limit=10)` で直近10往復に制限 |
-| ハルシネーション対策 | `lambda/rag/handler.py` | 「文書にない情報は"わかりません"」プロンプト |
-
-### Bedrock 主要機能
-
-| 機能 | 実装ファイル | ポイント |
-|---|---|---|
-| **InvokeModel** | `lambda/chat/handler.py` | Anthropic Messages API 形式、`bedrock-2023-05-31` |
-| **ストリーミング** | `lambda/chat/handler.py` | `invoke_model_with_response_stream` → SSE |
-| **Guardrails** | `bedrock_guardrails.tf` | DRAFT → バージョン番号 → Alias の管理 |
-| **Knowledge Base** | `bedrock_knowledge_base.tf` | S3 → Embedding → AOSS の ingestion フロー |
-| **Agent** | `bedrock_agent.tf` | ReAct ループ、Action Group、Alias/Version |
-| **RAG** | `lambda/rag/handler.py` | RetrieveAndGenerate vs Retrieve の違い |
-
-### セキュリティ & ガバナンス
-
-| 概念 | 実装ファイル | ポイント |
-|---|---|---|
-| 最小権限 IAM | `iam.tf` | サービスごとに独立ロール、ワイルドカード最小化 |
-| VPC エンドポイント | `bedrock_knowledge_base.tf` | `AllowFromPublic = false` で内部通信 |
-| Guardrails PII | `bedrock_guardrails.tf` | ANONYMIZE(匿名化) vs BLOCK(完全拒否)の使い分け |
-| モデル呼び出しログ | `cloudwatch.tf` | 監査・コンプライアンスに必須 |
-| S3 暗号化 | `s3.tf` | SSE-S3(低コスト) vs SSE-KMS(監査ログあり) |
-| データ保持 | `dynamodb.tf` | TTL で個人データを自動削除（プライバシー準拠） |
-
-### コスト最適化
-
-| 戦略 | 実装箇所 | ポイント |
-|---|---|---|
-| サーバーレス | Lambda + API GW + DynamoDB PAY_PER_REQUEST | アイドル時 $0 |
-| モデル選択 | `variables.tf` | Haiku < Sonnet < Opus（コスト順） |
-| Knowledge Base 無効デフォルト | `variables.tf` | OpenSearch Serverless = 最大コスト要因 |
-| ログ保持短縮 | `variables.tf` | log_retention_days = 7 で CloudWatch コスト削減 |
-| S3 ライフサイクル | `s3.tf` | Standard → IA(30日) → 削除(90日) |
-| DynamoDB TTL | `dynamodb.tf` | 古い会話履歴を自動削除 |
-
----
-
-## 各リソースの学習ポイント
-
-### Bedrock Guardrails（`bedrock_guardrails.tf`）
-
-```mermaid
-flowchart TD
-    Req["📩 ユーザーの入力"] --> GR
-
-    subgraph GR[Guardrails - 入力チェック]
-        CF["コンテンツフィルタ\nHATE / INSULTS / SEXUAL\nVIOLENCE / PROMPT_ATTACK\n強度: NONE → LOW → MEDIUM → HIGH"]
-        PII["PII フィルタ\nEMAIL / PHONE / NAME\nADDRESS / CREDIT_CARD\nANONYMIZE or BLOCK"]
-        Topic["トピック拒否\n投資アドバイス\n医療診断など\nカスタム定義"]
-        Word["ワードブロック\n特定単語リスト\n+ PROFANITY マネージドリスト"]
-    end
-
-    GR -->|全フィルタ通過| Model["🤖 Claude 3.5 Haiku\n（モデル呼び出し）"]
-    GR -->|いずれかに違反| Block["🚫 ブロック\nblocked_input_messaging\nを返す"]
-
-    Model --> GR2
-
-    subgraph GR2[Guardrails - 出力チェック]
-        CF2["コンテンツフィルタ\n（出力用）"]
-        PII2["PII フィルタ\n（出力用）"]
-    end
-
-    GR2 -->|通過| Res["✅ ユーザーへ回答"]
-    GR2 -->|違反| Block2["🚫 ブロック\nblocked_outputs_messaging\nを返す"]
-```
-
-バージョン管理: `DRAFT` → `aws_bedrock_guardrail_version` で番号付きバージョンに昇格。本番環境では必ずバージョン番号を固定すること（DRAFT は変更が即反映されるため危険）。
-
-### Bedrock Knowledge Base（`bedrock_knowledge_base.tf`）
-
-**Ingestion フロー**（S3 のドキュメントをベクトルDBに取り込む）
-
-```mermaid
-flowchart LR
-    S3[("S3\nPDF / テキスト")] -->|Data Source Sync\n定期 or 手動| Extract
-
-    subgraph Ingestion[Knowledge Base - Ingestion パイプライン]
-        Extract["テキスト抽出"]
-        Chunk["チャンキング\n300トークン\n重複20%"]
-        Embed["Embedding\nTitan Embeddings V2\n1536次元ベクトル"]
-        Extract --> Chunk --> Embed
-    end
-
-    Embed --> AOSS[("OpenSearch Serverless\nベクトルインデックス")]
-```
-
-**検索フロー**（RetrieveAndGenerate API の動き）
-
-```mermaid
-flowchart TD
-    Q["ユーザーの質問"] --> EmbedQ["Embedding 変換\n質問 → ベクトル"]
-    EmbedQ --> Search["コサイン類似検索\n上位 3 チャンク取得"]
-    Search <-->|ベクトル検索| AOSS[("OpenSearch Serverless")]
-    Search --> Prompt["プロンプト構築\n$search_results$ + $query$"]
-    Prompt --> Claude["Claude 3.5 Haiku\nInvokeModel"]
-    Claude --> Answer["回答テキスト\n+ Citations\n（引用元ドキュメント）"]
-```
-
-**チャンキング戦略の比較**
-
-| 戦略 | 精度 | コスト | 用途 |
-|---|---|---|---|
-| `FIXED_SIZE` | 普通 | 安い | シンプルな FAQ |
-| `HIERARCHICAL` | 高い | 中程度 | 長文ドキュメント |
-| `SEMANTIC` | 最高 | 高い（LLM使用） | 意味の境界を正確に分割 |
-| `NONE` | - | 最安 | ドキュメント単位で検索 |
-
-### Bedrock Agent（`bedrock_agent.tf`）
-
-**ReAct ループ**（Reasoning + Acting）
-
-```mermaid
-flowchart TD
-    Input["👤 ユーザー入力"] --> Reason
-
-    subgraph Loop[ReAct ループ - 繰り返し]
-        Reason["🧠 Reasoning\nどのツールを使うか推論\nOpenAPI スキーマを参照"]
-        Act["⚙️ Acting\nLambda 関数を呼び出し\nパラメータは LLM が自動生成"]
-        Obs["👁️ Observation\n結果を観察・解釈"]
-        Reason --> Act --> Obs
-    end
-
-    Obs --> Judge{"十分な情報\nがある?"}
-    Judge -->|No - まだ足りない| Reason
-    Judge -->|Yes| Answer["📝 最終回答を生成\n（Citations 付き）"]
-```
-
-**Action Group / バージョン管理**
-
-```mermaid
-flowchart LR
-    subgraph Dev[開発]
-        DRAFT["DRAFT\n（即時反映）"]
-    end
-
-    subgraph Release[リリース管理]
-        DRAFT -->|terraform apply\nPrepare| V1["Version 1"]
-        DRAFT -->|更新後\nPrepare| V2["Version 2"]
-    end
-
-    subgraph Routing[Alias でトラフィック制御]
-        V1 --> AliasProd["Alias: prod\n→ Version 1"]
-        V2 --> AliasStg["Alias: staging\n→ Version 2"]
-        V1 & V2 --> AliasCanary["Alias: canary\nV1: 90% / V2: 10%\nカナリアデプロイ"]
-    end
-
-    AliasProd --> User["👤 ユーザー"]
-    AliasStg  --> Tester["🧪 テスター"]
-    AliasCanary --> User
-```
-
-### IAM 最小権限設計（`iam.tf`）
-
-```
-ロール分離:
-  aws_iam_role.lambda_exec     → Lambda 関数の実行ロール
-  aws_iam_role.knowledge_base  → Bedrock が S3/AOSS にアクセス
-  aws_iam_role.bedrock_agent   → Agent が Lambda/モデルを呼び出す
-  aws_iam_role.bedrock_logging → Bedrock がログを S3 に書き込む
-
-試験頻出 Action:
-  bedrock:InvokeModel                → モデル直接呼び出し（必須）
-  bedrock:InvokeModelWithResponseStream → ストリーミング
-  bedrock:Retrieve                   → Knowledge Base 検索
-  bedrock:RetrieveAndGenerate        → RAG（検索＋生成）
-  bedrock:InvokeAgent                → エージェント実行
-  bedrock:ApplyGuardrail             → ガードレール事後適用
-
-Trust Policy:
-  lambda.amazonaws.com  → Lambda が AssumeRole
-  bedrock.amazonaws.com → Bedrock が AssumeRole
-    ConditionのSourceAccountが重要（混乱した代理問題の防止）
 ```
 
 ---
