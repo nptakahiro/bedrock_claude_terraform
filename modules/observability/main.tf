@@ -40,7 +40,7 @@ resource "aws_bedrock_model_invocation_logging_configuration" "main" {
     image_data_delivery_enabled     = true
     text_data_delivery_enabled      = true
 
-    cloud_watch_config {
+    cloudwatch_config {
       log_group_name = aws_cloudwatch_log_group.bedrock_invocations.name
       role_arn       = aws_iam_role.bedrock_logging.arn
 
