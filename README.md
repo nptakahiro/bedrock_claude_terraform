@@ -1,4 +1,4 @@
-# bedrock_claude_terraform — Amazon Bedrock × Claude  Terraform構築
+# bedrock_claude_terraform — Bedrock×Claude Terraform構築
 
 **目標**: Terraform で Amazon Bedrock × Claude を素早くデプロイし、主要機能をひと通り体験する  
 **方針**: アイドル時 $0 のサーバーレス構成で Bedrock の全主要機能を網羅
